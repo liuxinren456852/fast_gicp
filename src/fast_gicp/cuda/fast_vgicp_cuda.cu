@@ -110,6 +110,8 @@ void FastVGICPCudaCore::find_source_neighbors(int k) {
 
   if(!source_neighbors) {
     source_neighbors.reset(new thrust::device_vector<int>(k_neighbors.size()));
+  } else {
+    source_neighbors->resize(k_neighbors.size());
   }
   thrust::transform(k_neighbors.begin(), k_neighbors.end(), source_neighbors->begin(), untie_pair_second());
 }
@@ -122,6 +124,8 @@ void FastVGICPCudaCore::find_target_neighbors(int k) {
 
   if(!target_neighbors) {
     target_neighbors.reset(new thrust::device_vector<int>(k_neighbors.size()));
+  } else {
+    target_neighbors->resize(k_neighbors.size());
   }
   thrust::transform(k_neighbors.begin(), k_neighbors.end(), target_neighbors->begin(), untie_pair_second());
 }
@@ -137,7 +141,7 @@ void FastVGICPCudaCore::calculate_source_covariances(RegularizationMethod method
 }
 
 void FastVGICPCudaCore::calculate_target_covariances(RegularizationMethod method) {
-  assert(source_points && source_neighbors);
+  assert(target_points && target_neighbors);
   int k = target_neighbors->size() / target_points->size();
 
   if(!target_covariances) {
@@ -210,11 +214,21 @@ bool FastVGICPCudaCore::optimize(const Eigen::Isometry3f& initial_guess, Eigen::
     Eigen::Matrix<float, 6, 1> J_loss;
     cublasGetVector(6, sizeof(float), thrust::raw_pointer_cast(J_loss_ptr), 1, J_loss.data(), 1);
 
-    Eigen::Matrix<float, 6, 1> delta = JJ.llt().solve(J_loss);
+    Eigen::Matrix<float, 6, 1> delta = JJ.ldlt().solve(J_loss);
 
     // update parameters
-    x0.head<3>() = (Sophus::SO3f::exp(-delta.head<3>()) * Sophus::SO3f::exp(x0.head<3>())).log();
-    x0.tail<3>() -= delta.tail<3>();
+    Eigen::Isometry3f x0_ = Eigen::Isometry3f::Identity();
+    x0_.linear() = Sophus::SO3f::exp(x0.head<3>()).matrix();
+    x0_.translation() = x0.tail<3>();
+
+    Eigen::Isometry3f delta_ = Eigen::Isometry3f::Identity();
+    delta_.linear() = Sophus::SO3f::exp(delta.head<3>()).matrix();
+    delta_.translation() = delta.tail<3>();
+
+    Eigen::Isometry3f x1_ = delta_.inverse() * x0_;
+
+    x0.head<3>() = Sophus::SO3f(x1_.linear()).log();
+    x0.tail<3>() = x1_.translation();
 
     if(is_converged(delta)) {
       converged = true;
